@@ -114,6 +114,8 @@ Start a new session in your chosen platform and ask for something that should tr
 
 7. **finishing-a-development-branch** - Activates when tasks complete. Verifies tests, presents options (merge/PR/keep/discard), cleans up worktree.
 
+8. **memory-tracker** - Records closed reviewable change units in `docs/superpowers/memory/`, discovering repository-defined categories and progressively introducing missing structure only when needed.
+
 **The agent checks for relevant skills before any task.** Mandatory workflows, not suggestions.
 
 ## What's Inside
@@ -137,6 +139,9 @@ Start a new session in your chosen platform and ask for something that should tr
 - **using-git-worktrees** - Parallel development branches
 - **finishing-a-development-branch** - Merge/PR decision workflow
 - **subagent-driven-development** - Fast iteration with two-stage review (spec compliance, then code quality)
+
+**Project Memory**
+- **memory-tracker** - Records closed reviewable change units in `docs/superpowers/memory/`, discovering repository-defined categories and progressively introducing missing structure only when needed
 
 **Meta**
 - **writing-skills** - Create new skills following best practices (includes testing methodology)
