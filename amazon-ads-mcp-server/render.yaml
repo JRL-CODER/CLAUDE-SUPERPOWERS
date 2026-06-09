@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: amazon-ads-mcp
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python mcp_server.py
+    envVars:
+      - key: REFRESH_TOKEN
+        sync: false
+      - key: CLIENT_ID
+        sync: false
+      - key: CLIENT_SECRET
+        sync: false
+      - key: API_REGION
+        value: na
+      - key: PORT
+        value: 8000
