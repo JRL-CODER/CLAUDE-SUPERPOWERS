@@ -2,17 +2,21 @@ import os
 import json
 import requests
 from datetime import datetime, timedelta
-from typing import Optional
-from fastmcp import FastMCP
-
-mcp = FastMCP()
+from typing import Optional, Any
+from mcp.server import Server
+from mcp.server.sse import SseServerTransport
+from mcp.types import Tool, TextContent
+from starlette.applications import Starlette
+from starlette.routing import Route, Mount
+from starlette.requests import Request
+import uvicorn
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 REFRESH_TOKEN = os.environ["REFRESH_TOKEN"]
 CLIENT_ID = os.environ["CLIENT_ID"]
 CLIENT_SECRET = os.environ["CLIENT_SECRET"]
-API_REGION = os.environ.get("API_REGION", "na")  # na | eu | fe
+API_REGION = os.environ.get("API_REGION", "na")
 
 REGION_ENDPOINTS = {
     "na": "https://advertising-api.amazon.com",
@@ -20,7 +24,7 @@ REGION_ENDPOINTS = {
     "fe": "https://advertising-api-fe.amazon.com",
 }
 
-_token_cache = {"access_token": None, "expires_at": 0}
+_token_cache: dict = {"access_token": None, "expires_at": 0}
 
 
 def get_access_token() -> str:
@@ -43,7 +47,7 @@ def get_access_token() -> str:
     return _token_cache["access_token"]
 
 
-def headers(profile_id: Optional[str] = None) -> dict:
+def hdrs(profile_id: Optional[str] = None) -> dict:
     h = {
         "Authorization": f"Bearer {get_access_token()}",
         "Amazon-Advertising-API-ClientId": CLIENT_ID,
@@ -65,644 +69,351 @@ def ok(r: requests.Response) -> str:
         return r.text
 
 
-# ── Profiles ──────────────────────────────────────────────────────────────────
-
-@mcp.tool()
-def list_profiles() -> str:
-    """List all Amazon Advertising profiles (accounts) available."""
-    r = requests.get(f"{base()}/v2/profiles", headers=headers())
-    return ok(r)
-
-
-@mcp.tool()
-def get_profile(profile_id: str) -> str:
-    """Get details for a specific profile."""
-    r = requests.get(f"{base()}/v2/profiles/{profile_id}", headers=headers())
-    return ok(r)
-
-
-@mcp.tool()
-def update_profile(profile_id: str, daily_budget: float) -> str:
-    """Update the daily budget of a profile."""
-    r = requests.put(
-        f"{base()}/v2/profiles",
-        headers=headers(),
-        json=[{"profileId": int(profile_id), "dailyBudget": daily_budget}],
-    )
-    return ok(r)
-
-
-# ── Portfolios ────────────────────────────────────────────────────────────────
-
-@mcp.tool()
-def list_portfolios(profile_id: str) -> str:
-    """List all portfolios for a profile."""
-    r = requests.get(f"{base()}/v1/portfolios", headers=headers(profile_id))
-    return ok(r)
-
-
-@mcp.tool()
-def create_portfolio(profile_id: str, name: str, budget_amount: float, budget_currency: str, budget_policy: str = "dateRange", start_date: str = "", end_date: str = "") -> str:
-    """Create a new portfolio. budget_policy: dateRange or MonthlyRecurring."""
-    body = {"name": name, "budget": {"amount": budget_amount, "currencyCode": budget_currency, "policy": budget_policy}}
-    if start_date:
-        body["budget"]["startDate"] = start_date
-    if end_date:
-        body["budget"]["endDate"] = end_date
-    r = requests.post(f"{base()}/v1/portfolios", headers=headers(profile_id), json=[body])
-    return ok(r)
-
-
-@mcp.tool()
-def update_portfolio(profile_id: str, portfolio_id: str, name: str = "", budget_amount: float = 0) -> str:
-    """Update a portfolio name or budget."""
-    body = {"portfolioId": int(portfolio_id)}
-    if name:
-        body["name"] = name
-    if budget_amount:
-        body["budget"] = {"amount": budget_amount}
-    r = requests.put(f"{base()}/v1/portfolios", headers=headers(profile_id), json=[body])
-    return ok(r)
-
-
-# ── Sponsored Products Campaigns ──────────────────────────────────────────────
-
-@mcp.tool()
-def list_sp_campaigns(profile_id: str, state_filter: str = "enabled,paused,archived") -> str:
-    """List Sponsored Products campaigns. state_filter: enabled,paused,archived"""
-    r = requests.get(f"{base()}/v2/sp/campaigns", headers=headers(profile_id), params={"stateFilter": state_filter})
-    return ok(r)
-
-
-@mcp.tool()
-def get_sp_campaign(profile_id: str, campaign_id: str) -> str:
-    """Get a specific Sponsored Products campaign."""
-    r = requests.get(f"{base()}/v2/sp/campaigns/{campaign_id}", headers=headers(profile_id))
-    return ok(r)
-
-
-@mcp.tool()
-def create_sp_campaign(profile_id: str, name: str, targeting_type: str, daily_budget: float, start_date: str, end_date: str = "", portfolio_id: str = "") -> str:
-    """Create a Sponsored Products campaign. targeting_type: manual or auto. start_date format: YYYYMMDD."""
-    body = {
-        "name": name,
-        "campaignType": "sponsoredProducts",
-        "targetingType": targeting_type,
-        "state": "enabled",
-        "dailyBudget": daily_budget,
-        "startDate": start_date,
-    }
-    if end_date:
-        body["endDate"] = end_date
-    if portfolio_id:
-        body["portfolioId"] = int(portfolio_id)
-    r = requests.post(f"{base()}/v2/sp/campaigns", headers=headers(profile_id), json=[body])
-    return ok(r)
-
-
-@mcp.tool()
-def update_sp_campaign(profile_id: str, campaign_id: str, name: str = "", state: str = "", daily_budget: float = 0) -> str:
-    """Update a Sponsored Products campaign. state: enabled, paused, archived."""
-    body = {"campaignId": int(campaign_id)}
-    if name:
-        body["name"] = name
-    if state:
-        body["state"] = state
-    if daily_budget:
-        body["dailyBudget"] = daily_budget
-    r = requests.put(f"{base()}/v2/sp/campaigns", headers=headers(profile_id), json=[body])
-    return ok(r)
-
-
-@mcp.tool()
-def delete_sp_campaign(profile_id: str, campaign_id: str) -> str:
-    """Archive (delete) a Sponsored Products campaign."""
-    r = requests.delete(f"{base()}/v2/sp/campaigns/{campaign_id}", headers=headers(profile_id))
-    return ok(r)
-
-
-# ── SP Ad Groups ──────────────────────────────────────────────────────────────
-
-@mcp.tool()
-def list_sp_ad_groups(profile_id: str, campaign_id: str = "", state_filter: str = "enabled,paused") -> str:
-    """List Sponsored Products ad groups."""
-    params = {"stateFilter": state_filter}
-    if campaign_id:
-        params["campaignIdFilter"] = campaign_id
-    r = requests.get(f"{base()}/v2/sp/adGroups", headers=headers(profile_id), params=params)
-    return ok(r)
-
-
-@mcp.tool()
-def create_sp_ad_group(profile_id: str, campaign_id: str, name: str, default_bid: float) -> str:
-    """Create a Sponsored Products ad group."""
-    body = {"campaignId": int(campaign_id), "name": name, "defaultBid": default_bid, "state": "enabled"}
-    r = requests.post(f"{base()}/v2/sp/adGroups", headers=headers(profile_id), json=[body])
-    return ok(r)
-
-
-@mcp.tool()
-def update_sp_ad_group(profile_id: str, ad_group_id: str, name: str = "", default_bid: float = 0, state: str = "") -> str:
-    """Update a Sponsored Products ad group."""
-    body = {"adGroupId": int(ad_group_id)}
-    if name:
-        body["name"] = name
-    if default_bid:
-        body["defaultBid"] = default_bid
-    if state:
-        body["state"] = state
-    r = requests.put(f"{base()}/v2/sp/adGroups", headers=headers(profile_id), json=[body])
-    return ok(r)
-
-
-@mcp.tool()
-def delete_sp_ad_group(profile_id: str, ad_group_id: str) -> str:
-    """Archive a Sponsored Products ad group."""
-    r = requests.delete(f"{base()}/v2/sp/adGroups/{ad_group_id}", headers=headers(profile_id))
-    return ok(r)
-
-
-# ── SP Keywords ───────────────────────────────────────────────────────────────
-
-@mcp.tool()
-def list_sp_keywords(profile_id: str, ad_group_id: str = "", campaign_id: str = "", state_filter: str = "enabled,paused") -> str:
-    """List Sponsored Products keywords."""
-    params = {"stateFilter": state_filter}
-    if ad_group_id:
-        params["adGroupIdFilter"] = ad_group_id
-    if campaign_id:
-        params["campaignIdFilter"] = campaign_id
-    r = requests.get(f"{base()}/v2/sp/keywords", headers=headers(profile_id), params=params)
-    return ok(r)
-
-
-@mcp.tool()
-def create_sp_keywords(profile_id: str, ad_group_id: str, campaign_id: str, keywords: str, match_type: str = "exact", bid: float = 0.5) -> str:
-    """Create SP keywords. keywords: comma-separated list. match_type: exact, phrase, broad."""
-    kw_list = [k.strip() for k in keywords.split(",")]
-    body = [{"adGroupId": int(ad_group_id), "campaignId": int(campaign_id), "keywordText": kw, "matchType": match_type, "bid": bid, "state": "enabled"} for kw in kw_list]
-    r = requests.post(f"{base()}/v2/sp/keywords", headers=headers(profile_id), json=body)
-    return ok(r)
-
-
-@mcp.tool()
-def update_sp_keyword(profile_id: str, keyword_id: str, bid: float = 0, state: str = "") -> str:
-    """Update a SP keyword bid or state."""
-    body = {"keywordId": int(keyword_id)}
-    if bid:
-        body["bid"] = bid
-    if state:
-        body["state"] = state
-    r = requests.put(f"{base()}/v2/sp/keywords", headers=headers(profile_id), json=[body])
-    return ok(r)
-
-
-@mcp.tool()
-def delete_sp_keyword(profile_id: str, keyword_id: str) -> str:
-    """Archive a SP keyword."""
-    r = requests.delete(f"{base()}/v2/sp/keywords/{keyword_id}", headers=headers(profile_id))
-    return ok(r)
-
-
-# ── SP Negative Keywords ──────────────────────────────────────────────────────
-
-@mcp.tool()
-def list_sp_negative_keywords(profile_id: str, ad_group_id: str = "", campaign_id: str = "") -> str:
-    """List Sponsored Products negative keywords."""
-    params = {}
-    if ad_group_id:
-        params["adGroupIdFilter"] = ad_group_id
-    if campaign_id:
-        params["campaignIdFilter"] = campaign_id
-    r = requests.get(f"{base()}/v2/sp/negativeKeywords", headers=headers(profile_id), params=params)
-    return ok(r)
-
-
-@mcp.tool()
-def create_sp_negative_keywords(profile_id: str, ad_group_id: str, campaign_id: str, keywords: str, match_type: str = "negativeExact") -> str:
-    """Create SP negative keywords. match_type: negativeExact or negativePhrase."""
-    kw_list = [k.strip() for k in keywords.split(",")]
-    body = [{"adGroupId": int(ad_group_id), "campaignId": int(campaign_id), "keywordText": kw, "matchType": match_type, "state": "enabled"} for kw in kw_list]
-    r = requests.post(f"{base()}/v2/sp/negativeKeywords", headers=headers(profile_id), json=body)
-    return ok(r)
-
-
-@mcp.tool()
-def delete_sp_negative_keyword(profile_id: str, keyword_id: str) -> str:
-    """Delete a SP negative keyword."""
-    r = requests.delete(f"{base()}/v2/sp/negativeKeywords/{keyword_id}", headers=headers(profile_id))
-    return ok(r)
-
-
-# ── SP Product Ads ─────────────────────────────────────────────────────────────
-
-@mcp.tool()
-def list_sp_product_ads(profile_id: str, ad_group_id: str = "", campaign_id: str = "", state_filter: str = "enabled,paused") -> str:
-    """List Sponsored Products product ads."""
-    params = {"stateFilter": state_filter}
-    if ad_group_id:
-        params["adGroupIdFilter"] = ad_group_id
-    if campaign_id:
-        params["campaignIdFilter"] = campaign_id
-    r = requests.get(f"{base()}/v2/sp/productAds", headers=headers(profile_id), params=params)
-    return ok(r)
-
-
-@mcp.tool()
-def create_sp_product_ad(profile_id: str, campaign_id: str, ad_group_id: str, sku: str = "", asin: str = "") -> str:
-    """Create a SP product ad. Provide SKU for seller, ASIN for vendor."""
-    body = {"campaignId": int(campaign_id), "adGroupId": int(ad_group_id), "state": "enabled"}
-    if sku:
-        body["sku"] = sku
-    if asin:
-        body["asin"] = asin
-    r = requests.post(f"{base()}/v2/sp/productAds", headers=headers(profile_id), json=[body])
-    return ok(r)
-
-
-@mcp.tool()
-def update_sp_product_ad(profile_id: str, ad_id: str, state: str) -> str:
-    """Update a SP product ad state: enabled, paused, archived."""
-    r = requests.put(f"{base()}/v2/sp/productAds", headers=headers(profile_id), json=[{"adId": int(ad_id), "state": state}])
-    return ok(r)
-
-
-@mcp.tool()
-def delete_sp_product_ad(profile_id: str, ad_id: str) -> str:
-    """Archive a SP product ad."""
-    r = requests.delete(f"{base()}/v2/sp/productAds/{ad_id}", headers=headers(profile_id))
-    return ok(r)
-
-
-# ── SP Targets (Product/Category Targeting) ───────────────────────────────────
-
-@mcp.tool()
-def list_sp_targets(profile_id: str, ad_group_id: str = "", campaign_id: str = "", state_filter: str = "enabled,paused") -> str:
-    """List SP product/category targeting clauses."""
-    params = {"stateFilter": state_filter}
-    if ad_group_id:
-        params["adGroupIdFilter"] = ad_group_id
-    if campaign_id:
-        params["campaignIdFilter"] = campaign_id
-    r = requests.get(f"{base()}/v2/sp/targets", headers=headers(profile_id), params=params)
-    return ok(r)
-
-
-@mcp.tool()
-def create_sp_asin_target(profile_id: str, campaign_id: str, ad_group_id: str, asin: str, bid: float = 0.5) -> str:
-    """Create an ASIN product targeting clause for SP."""
-    body = [{
-        "campaignId": int(campaign_id),
-        "adGroupId": int(ad_group_id),
-        "state": "enabled",
-        "expression": [{"type": "asinSameAs", "value": asin}],
-        "expressionType": "manual",
-        "bid": bid,
-    }]
-    r = requests.post(f"{base()}/v2/sp/targets", headers=headers(profile_id), json=body)
-    return ok(r)
-
-
-@mcp.tool()
-def update_sp_target(profile_id: str, target_id: str, bid: float = 0, state: str = "") -> str:
-    """Update a SP target bid or state."""
-    body = {"targetId": int(target_id)}
-    if bid:
-        body["bid"] = bid
-    if state:
-        body["state"] = state
-    r = requests.put(f"{base()}/v2/sp/targets", headers=headers(profile_id), json=[body])
-    return ok(r)
-
-
-@mcp.tool()
-def delete_sp_target(profile_id: str, target_id: str) -> str:
-    """Archive a SP target."""
-    r = requests.delete(f"{base()}/v2/sp/targets/{target_id}", headers=headers(profile_id))
-    return ok(r)
-
-
-# ── SP Bid Recommendations ─────────────────────────────────────────────────────
-
-@mcp.tool()
-def get_sp_bid_recommendations(profile_id: str, ad_group_id: str, keywords: str) -> str:
-    """Get bid recommendations for SP keywords. keywords: comma-separated."""
-    kw_list = [{"keyword": k.strip()} for k in keywords.split(",")]
-    body = {"adGroupId": int(ad_group_id), "keywords": kw_list}
-    r = requests.post(f"{base()}/v2/sp/keywords/bidRecommendations", headers=headers(profile_id), json=body)
-    return ok(r)
-
-
-# ── Sponsored Brands Campaigns ────────────────────────────────────────────────
-
-@mcp.tool()
-def list_sb_campaigns(profile_id: str, state_filter: str = "enabled,paused") -> str:
-    """List Sponsored Brands campaigns."""
-    r = requests.get(f"{base()}/v4/sb/campaigns", headers=headers(profile_id), params={"stateFilter": state_filter})
-    return ok(r)
-
-
-@mcp.tool()
-def get_sb_campaign(profile_id: str, campaign_id: str) -> str:
-    """Get a specific Sponsored Brands campaign."""
-    r = requests.get(f"{base()}/v4/sb/campaigns/{campaign_id}", headers=headers(profile_id))
-    return ok(r)
-
-
-@mcp.tool()
-def update_sb_campaign(profile_id: str, campaign_id: str, budget: float = 0, state: str = "", name: str = "") -> str:
-    """Update a Sponsored Brands campaign budget, state, or name."""
-    body = {"campaignId": campaign_id}
-    if budget:
-        body["budget"] = {"budget": budget}
-    if state:
-        body["state"] = state
-    if name:
-        body["name"] = name
-    r = requests.put(f"{base()}/v4/sb/campaigns", headers=headers(profile_id), json={"campaigns": [body]})
-    return ok(r)
-
-
-@mcp.tool()
-def list_sb_ad_groups(profile_id: str, campaign_id: str = "") -> str:
-    """List Sponsored Brands ad groups."""
-    params = {}
-    if campaign_id:
-        params["campaignIdFilter"] = campaign_id
-    r = requests.get(f"{base()}/v4/sb/adGroups", headers=headers(profile_id), params=params)
-    return ok(r)
-
-
-@mcp.tool()
-def list_sb_keywords(profile_id: str, campaign_id: str = "", ad_group_id: str = "") -> str:
-    """List Sponsored Brands keywords."""
-    params = {}
-    if campaign_id:
-        params["campaignIdFilter"] = campaign_id
-    if ad_group_id:
-        params["adGroupIdFilter"] = ad_group_id
-    r = requests.get(f"{base()}/v4/sb/keywords", headers=headers(profile_id), params=params)
-    return ok(r)
-
-
-@mcp.tool()
-def update_sb_keyword(profile_id: str, keyword_id: str, bid: float = 0, state: str = "") -> str:
-    """Update a SB keyword bid or state."""
-    body = {"keywordId": keyword_id}
-    if bid:
-        body["bid"] = bid
-    if state:
-        body["state"] = state
-    r = requests.put(f"{base()}/v4/sb/keywords", headers=headers(profile_id), json={"keywords": [body]})
-    return ok(r)
-
-
-@mcp.tool()
-def list_sb_negative_keywords(profile_id: str, campaign_id: str = "") -> str:
-    """List Sponsored Brands negative keywords."""
-    params = {}
-    if campaign_id:
-        params["campaignIdFilter"] = campaign_id
-    r = requests.get(f"{base()}/v4/sb/negativeKeywords", headers=headers(profile_id), params=params)
-    return ok(r)
-
-
-# ── Sponsored Display Campaigns ───────────────────────────────────────────────
-
-@mcp.tool()
-def list_sd_campaigns(profile_id: str, state_filter: str = "enabled,paused") -> str:
-    """List Sponsored Display campaigns."""
-    r = requests.get(f"{base()}/sd/campaigns", headers=headers(profile_id), params={"stateFilter": state_filter})
-    return ok(r)
-
-
-@mcp.tool()
-def get_sd_campaign(profile_id: str, campaign_id: str) -> str:
-    """Get a specific Sponsored Display campaign."""
-    r = requests.get(f"{base()}/sd/campaigns/{campaign_id}", headers=headers(profile_id))
-    return ok(r)
-
-
-@mcp.tool()
-def update_sd_campaign(profile_id: str, campaign_id: str, budget: float = 0, state: str = "") -> str:
-    """Update a Sponsored Display campaign."""
-    body = {"campaignId": int(campaign_id)}
-    if budget:
-        body["budget"] = budget
-    if state:
-        body["state"] = state
-    r = requests.put(f"{base()}/sd/campaigns", headers=headers(profile_id), json=[body])
-    return ok(r)
-
-
-@mcp.tool()
-def list_sd_ad_groups(profile_id: str, campaign_id: str = "") -> str:
-    """List Sponsored Display ad groups."""
-    params = {}
-    if campaign_id:
-        params["campaignIdFilter"] = campaign_id
-    r = requests.get(f"{base()}/sd/adGroups", headers=headers(profile_id), params=params)
-    return ok(r)
-
-
-@mcp.tool()
-def list_sd_targets(profile_id: str, ad_group_id: str = "") -> str:
-    """List Sponsored Display targeting clauses."""
-    params = {}
-    if ad_group_id:
-        params["adGroupIdFilter"] = ad_group_id
-    r = requests.get(f"{base()}/sd/targets", headers=headers(profile_id), params=params)
-    return ok(r)
-
-
-@mcp.tool()
-def update_sd_target(profile_id: str, target_id: str, bid: float = 0, state: str = "") -> str:
-    """Update a SD target bid or state."""
-    body = {"targetId": int(target_id)}
-    if bid:
-        body["bid"] = bid
-    if state:
-        body["state"] = state
-    r = requests.put(f"{base()}/sd/targets", headers=headers(profile_id), json=[body])
-    return ok(r)
-
-
-# ── Reports ───────────────────────────────────────────────────────────────────
-
-@mcp.tool()
-def request_sp_campaign_report(profile_id: str, start_date: str, end_date: str, metrics: str = "impressions,clicks,spend,sales7d,acos7d,roas7d,orders7d") -> str:
-    """Request a SP campaign performance report. Dates: YYYYMMDD."""
-    body = {
-        "reportDate": end_date,
-        "metrics": metrics,
-        "segment": "query",
-    }
-    r = requests.post(f"{base()}/v2/sp/campaigns/report", headers=headers(profile_id), json=body)
-    return ok(r)
-
-
-@mcp.tool()
-def request_sp_keyword_report(profile_id: str, report_date: str, metrics: str = "impressions,clicks,spend,sales7d,acos7d,roas7d,orders7d,keywordText,matchType") -> str:
-    """Request a SP keyword performance report. Date: YYYYMMDD."""
-    body = {"reportDate": report_date, "metrics": metrics}
-    r = requests.post(f"{base()}/v2/sp/keywords/report", headers=headers(profile_id), json=body)
-    return ok(r)
-
-
-@mcp.tool()
-def request_sp_asin_report(profile_id: str, report_date: str, metrics: str = "impressions,clicks,spend,sales7d,orders7d,asin,advertisedAsin") -> str:
-    """Request a SP ASIN (advertised product) report. Date: YYYYMMDD."""
-    body = {"reportDate": report_date, "metrics": metrics, "segment": "query"}
-    r = requests.post(f"{base()}/v2/sp/productAds/report", headers=headers(profile_id), json=body)
-    return ok(r)
-
-
-@mcp.tool()
-def request_sp_search_term_report(profile_id: str, report_date: str, metrics: str = "impressions,clicks,spend,sales7d,orders7d,keywordText,query,matchType") -> str:
-    """Request a SP search term report to see what customers searched. Date: YYYYMMDD."""
-    body = {"reportDate": report_date, "metrics": metrics, "segment": "query"}
-    r = requests.post(f"{base()}/v2/sp/keywords/report", headers=headers(profile_id), json=body)
-    return ok(r)
-
-
-@mcp.tool()
-def request_sb_campaign_report(profile_id: str, report_date: str, metrics: str = "impressions,clicks,spend,sales14d,orders14d,attributedSales14d") -> str:
-    """Request a SB campaign report. Date: YYYYMMDD."""
-    body = {"reportDate": report_date, "metrics": metrics}
-    r = requests.post(f"{base()}/v4/sb/campaigns/report", headers=headers(profile_id), json=body)
-    return ok(r)
-
-
-@mcp.tool()
-def request_sd_campaign_report(profile_id: str, report_date: str, metrics: str = "impressions,clicks,spend,sales14d,orders14d") -> str:
-    """Request a SD campaign report. Date: YYYYMMDD."""
-    body = {"reportDate": report_date, "metrics": metrics}
-    r = requests.post(f"{base()}/sd/campaigns/report", headers=headers(profile_id), json=body)
-    return ok(r)
-
-
-@mcp.tool()
-def get_report_status(profile_id: str, report_id: str) -> str:
-    """Check the status of a requested report."""
-    r = requests.get(f"{base()}/v2/reports/{report_id}", headers=headers(profile_id))
-    return ok(r)
-
-
-@mcp.tool()
-def download_report(profile_id: str, report_id: str) -> str:
-    """Download a completed report by reportId. Returns the report data as JSON."""
-    status_r = requests.get(f"{base()}/v2/reports/{report_id}", headers=headers(profile_id))
-    data = status_r.json()
-    if data.get("status") != "SUCCESS":
-        return json.dumps({"status": data.get("status"), "message": "Report not ready yet."})
-    location = data.get("location")
-    if not location:
-        return json.dumps({"error": "No download location found."})
-    report_r = requests.get(location)
-    try:
-        return json.dumps(report_r.json(), indent=2)
-    except Exception:
-        return report_r.text
-
-
-@mcp.tool()
-def get_last_7_days_report_date() -> str:
-    """Returns today's date and 7 days ago in YYYYMMDD format for use in reports."""
-    today = datetime.utcnow()
-    return json.dumps({
-        "today": today.strftime("%Y%m%d"),
-        "7_days_ago": (today - timedelta(days=7)).strftime("%Y%m%d"),
-        "yesterday": (today - timedelta(days=1)).strftime("%Y%m%d"),
-    })
-
-
-# ── Budget Rules ──────────────────────────────────────────────────────────────
-
-@mcp.tool()
-def list_budget_rules(profile_id: str, campaign_id: str) -> str:
-    """List budget rules for a campaign."""
-    r = requests.get(f"{base()}/v1/campaigns/{campaign_id}/budgetRules", headers=headers(profile_id))
-    return ok(r)
-
-
-@mcp.tool()
-def create_budget_rule(profile_id: str, campaign_id: str, rule_name: str, budget_increase_by: float, predicate_type: str = "DAYSOFWEEK", predicate_value: str = "MONDAY,TUESDAY,WEDNESDAY,THURSDAY,FRIDAY") -> str:
-    """Create a budget rule for a campaign (e.g. increase budget on weekdays)."""
-    body = {
-        "ruleType": "PERFORMANCE",
-        "name": rule_name,
-        "budgetIncreasedBy": {"type": "PERCENT", "value": budget_increase_by},
-        "conditions": [{"predicate": predicate_type, "value": predicate_value}],
-    }
-    r = requests.post(f"{base()}/v1/campaigns/{campaign_id}/budgetRules", headers=headers(profile_id), json=body)
-    return ok(r)
-
-
-# ── Suggested Keywords ────────────────────────────────────────────────────────
-
-@mcp.tool()
-def get_suggested_keywords_for_asin(profile_id: str, asin: str, ad_group_id: str = "", max_num_suggestions: int = 100) -> str:
-    """Get keyword suggestions for an ASIN."""
-    params = {"maxNumSuggestions": max_num_suggestions, "adStateFilter": "enabled"}
-    if ad_group_id:
-        params["adGroupId"] = ad_group_id
-    r = requests.get(f"{base()}/v2/sp/asins/{asin}/suggested/keywords", headers=headers(profile_id), params=params)
-    return ok(r)
-
-
-@mcp.tool()
-def get_suggested_keywords_bulk(profile_id: str, asins: str, max_num_suggestions: int = 100) -> str:
-    """Get keyword suggestions for multiple ASINs. asins: comma-separated."""
-    asin_list = [{"asin": a.strip()} for a in asins.split(",")]
-    body = {"asins": asin_list, "maxNumSuggestions": max_num_suggestions}
-    r = requests.post(f"{base()}/v2/sp/asins/suggested/keywords", headers=headers(profile_id), json=body)
-    return ok(r)
-
-
-# ── Targeting Recommendations ─────────────────────────────────────────────────
-
-@mcp.tool()
-def get_targeting_recommendations(profile_id: str, asins: str) -> str:
-    """Get product/category targeting recommendations for ASINs. asins: comma-separated."""
-    asin_list = [a.strip() for a in asins.split(",")]
-    body = {"asins": asin_list}
-    r = requests.post(f"{base()}/v2/sp/targets/productRecommendations", headers=headers(profile_id), json=body)
-    return ok(r)
-
-
-# ── Campaign Negative Keywords ────────────────────────────────────────────────
-
-@mcp.tool()
-def list_sp_campaign_negative_keywords(profile_id: str, campaign_id: str = "") -> str:
-    """List SP campaign-level negative keywords."""
-    params = {}
-    if campaign_id:
-        params["campaignIdFilter"] = campaign_id
-    r = requests.get(f"{base()}/v2/sp/campaignNegativeKeywords", headers=headers(profile_id), params=params)
-    return ok(r)
-
-
-@mcp.tool()
-def create_sp_campaign_negative_keyword(profile_id: str, campaign_id: str, keyword: str, match_type: str = "negativeExact") -> str:
-    """Add a campaign-level negative keyword to an SP campaign."""
-    body = [{"campaignId": int(campaign_id), "keywordText": keyword, "matchType": match_type, "state": "enabled"}]
-    r = requests.post(f"{base()}/v2/sp/campaignNegativeKeywords", headers=headers(profile_id), json=body)
-    return ok(r)
-
-
-# ── Health check ──────────────────────────────────────────────────────────────
-
-@mcp.tool()
-def health_check() -> str:
-    """Check if the MCP server and Amazon Ads API connection are working."""
-    try:
-        token = get_access_token()
-        return json.dumps({"status": "healthy", "token_prefix": token[:20] + "..."})
-    except Exception as e:
-        return json.dumps({"status": "error", "message": str(e)})
-
+# ── Tool definitions ──────────────────────────────────────────────────────────
+
+TOOLS = [
+    # Profiles
+    Tool(name="list_profiles", description="List all Amazon Advertising profiles.", inputSchema={"type": "object", "properties": {}}),
+    Tool(name="get_profile", description="Get a specific profile.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}}, "required": ["profile_id"]}),
+    Tool(name="update_profile", description="Update profile daily budget.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "daily_budget": {"type": "number"}}, "required": ["profile_id", "daily_budget"]}),
+    # Portfolios
+    Tool(name="list_portfolios", description="List portfolios for a profile.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}}, "required": ["profile_id"]}),
+    Tool(name="create_portfolio", description="Create a portfolio.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "name": {"type": "string"}, "budget_amount": {"type": "number"}, "budget_currency": {"type": "string"}}, "required": ["profile_id", "name", "budget_amount", "budget_currency"]}),
+    # SP Campaigns
+    Tool(name="list_sp_campaigns", description="List Sponsored Products campaigns.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "state_filter": {"type": "string", "default": "enabled,paused,archived"}}, "required": ["profile_id"]}),
+    Tool(name="get_sp_campaign", description="Get a specific SP campaign.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}}, "required": ["profile_id", "campaign_id"]}),
+    Tool(name="create_sp_campaign", description="Create an SP campaign. targeting_type: manual or auto. start_date: YYYYMMDD.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "name": {"type": "string"}, "targeting_type": {"type": "string"}, "daily_budget": {"type": "number"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "portfolio_id": {"type": "string"}}, "required": ["profile_id", "name", "targeting_type", "daily_budget", "start_date"]}),
+    Tool(name="update_sp_campaign", description="Update SP campaign. state: enabled, paused, archived.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}, "name": {"type": "string"}, "state": {"type": "string"}, "daily_budget": {"type": "number"}}, "required": ["profile_id", "campaign_id"]}),
+    Tool(name="delete_sp_campaign", description="Archive an SP campaign.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}}, "required": ["profile_id", "campaign_id"]}),
+    # SP Ad Groups
+    Tool(name="list_sp_ad_groups", description="List SP ad groups.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}, "state_filter": {"type": "string"}}, "required": ["profile_id"]}),
+    Tool(name="create_sp_ad_group", description="Create SP ad group.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}, "name": {"type": "string"}, "default_bid": {"type": "number"}}, "required": ["profile_id", "campaign_id", "name", "default_bid"]}),
+    Tool(name="update_sp_ad_group", description="Update SP ad group.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "ad_group_id": {"type": "string"}, "name": {"type": "string"}, "default_bid": {"type": "number"}, "state": {"type": "string"}}, "required": ["profile_id", "ad_group_id"]}),
+    Tool(name="delete_sp_ad_group", description="Archive SP ad group.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "ad_group_id": {"type": "string"}}, "required": ["profile_id", "ad_group_id"]}),
+    # SP Keywords
+    Tool(name="list_sp_keywords", description="List SP keywords.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "ad_group_id": {"type": "string"}, "campaign_id": {"type": "string"}, "state_filter": {"type": "string"}}, "required": ["profile_id"]}),
+    Tool(name="create_sp_keywords", description="Create SP keywords. keywords: comma-separated. match_type: exact, phrase, broad.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "ad_group_id": {"type": "string"}, "campaign_id": {"type": "string"}, "keywords": {"type": "string"}, "match_type": {"type": "string"}, "bid": {"type": "number"}}, "required": ["profile_id", "ad_group_id", "campaign_id", "keywords"]}),
+    Tool(name="update_sp_keyword", description="Update SP keyword bid or state.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "keyword_id": {"type": "string"}, "bid": {"type": "number"}, "state": {"type": "string"}}, "required": ["profile_id", "keyword_id"]}),
+    Tool(name="delete_sp_keyword", description="Archive SP keyword.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "keyword_id": {"type": "string"}}, "required": ["profile_id", "keyword_id"]}),
+    # SP Negative Keywords
+    Tool(name="list_sp_negative_keywords", description="List SP negative keywords.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "ad_group_id": {"type": "string"}, "campaign_id": {"type": "string"}}, "required": ["profile_id"]}),
+    Tool(name="create_sp_negative_keywords", description="Create SP negative keywords. match_type: negativeExact or negativePhrase.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "ad_group_id": {"type": "string"}, "campaign_id": {"type": "string"}, "keywords": {"type": "string"}, "match_type": {"type": "string"}}, "required": ["profile_id", "ad_group_id", "campaign_id", "keywords"]}),
+    Tool(name="delete_sp_negative_keyword", description="Delete SP negative keyword.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "keyword_id": {"type": "string"}}, "required": ["profile_id", "keyword_id"]}),
+    Tool(name="list_sp_campaign_negative_keywords", description="List SP campaign-level negative keywords.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}}, "required": ["profile_id"]}),
+    Tool(name="create_sp_campaign_negative_keyword", description="Add campaign-level negative keyword.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}, "keyword": {"type": "string"}, "match_type": {"type": "string"}}, "required": ["profile_id", "campaign_id", "keyword"]}),
+    # SP Product Ads
+    Tool(name="list_sp_product_ads", description="List SP product ads.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "ad_group_id": {"type": "string"}, "campaign_id": {"type": "string"}, "state_filter": {"type": "string"}}, "required": ["profile_id"]}),
+    Tool(name="create_sp_product_ad", description="Create SP product ad. Provide SKU for seller or ASIN for vendor.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}, "ad_group_id": {"type": "string"}, "sku": {"type": "string"}, "asin": {"type": "string"}}, "required": ["profile_id", "campaign_id", "ad_group_id"]}),
+    Tool(name="update_sp_product_ad", description="Update SP product ad state: enabled, paused, archived.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "ad_id": {"type": "string"}, "state": {"type": "string"}}, "required": ["profile_id", "ad_id", "state"]}),
+    Tool(name="delete_sp_product_ad", description="Archive SP product ad.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "ad_id": {"type": "string"}}, "required": ["profile_id", "ad_id"]}),
+    # SP Targets
+    Tool(name="list_sp_targets", description="List SP product/category targeting clauses.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "ad_group_id": {"type": "string"}, "campaign_id": {"type": "string"}, "state_filter": {"type": "string"}}, "required": ["profile_id"]}),
+    Tool(name="create_sp_asin_target", description="Create ASIN product targeting clause.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}, "ad_group_id": {"type": "string"}, "asin": {"type": "string"}, "bid": {"type": "number"}}, "required": ["profile_id", "campaign_id", "ad_group_id", "asin"]}),
+    Tool(name="update_sp_target", description="Update SP target bid or state.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "target_id": {"type": "string"}, "bid": {"type": "number"}, "state": {"type": "string"}}, "required": ["profile_id", "target_id"]}),
+    Tool(name="delete_sp_target", description="Archive SP target.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "target_id": {"type": "string"}}, "required": ["profile_id", "target_id"]}),
+    # SP Recommendations
+    Tool(name="get_sp_bid_recommendations", description="Get bid recommendations for SP keywords.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "ad_group_id": {"type": "string"}, "keywords": {"type": "string"}}, "required": ["profile_id", "ad_group_id", "keywords"]}),
+    Tool(name="get_suggested_keywords_for_asin", description="Get keyword suggestions for an ASIN.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "asin": {"type": "string"}, "max_num_suggestions": {"type": "integer"}}, "required": ["profile_id", "asin"]}),
+    Tool(name="get_suggested_keywords_bulk", description="Get keyword suggestions for multiple ASINs (comma-separated).", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "asins": {"type": "string"}, "max_num_suggestions": {"type": "integer"}}, "required": ["profile_id", "asins"]}),
+    Tool(name="get_targeting_recommendations", description="Get targeting recommendations for ASINs (comma-separated).", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "asins": {"type": "string"}}, "required": ["profile_id", "asins"]}),
+    # SB Campaigns
+    Tool(name="list_sb_campaigns", description="List Sponsored Brands campaigns.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "state_filter": {"type": "string"}}, "required": ["profile_id"]}),
+    Tool(name="get_sb_campaign", description="Get a specific SB campaign.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}}, "required": ["profile_id", "campaign_id"]}),
+    Tool(name="update_sb_campaign", description="Update SB campaign budget, state, or name.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}, "budget": {"type": "number"}, "state": {"type": "string"}, "name": {"type": "string"}}, "required": ["profile_id", "campaign_id"]}),
+    Tool(name="list_sb_ad_groups", description="List SB ad groups.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}}, "required": ["profile_id"]}),
+    Tool(name="list_sb_keywords", description="List SB keywords.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}, "ad_group_id": {"type": "string"}}, "required": ["profile_id"]}),
+    Tool(name="update_sb_keyword", description="Update SB keyword bid or state.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "keyword_id": {"type": "string"}, "bid": {"type": "number"}, "state": {"type": "string"}}, "required": ["profile_id", "keyword_id"]}),
+    Tool(name="list_sb_negative_keywords", description="List SB negative keywords.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}}, "required": ["profile_id"]}),
+    # SD Campaigns
+    Tool(name="list_sd_campaigns", description="List Sponsored Display campaigns.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "state_filter": {"type": "string"}}, "required": ["profile_id"]}),
+    Tool(name="get_sd_campaign", description="Get a specific SD campaign.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}}, "required": ["profile_id", "campaign_id"]}),
+    Tool(name="update_sd_campaign", description="Update SD campaign budget or state.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}, "budget": {"type": "number"}, "state": {"type": "string"}}, "required": ["profile_id", "campaign_id"]}),
+    Tool(name="list_sd_ad_groups", description="List SD ad groups.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}}, "required": ["profile_id"]}),
+    Tool(name="list_sd_targets", description="List SD targeting clauses.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "ad_group_id": {"type": "string"}}, "required": ["profile_id"]}),
+    Tool(name="update_sd_target", description="Update SD target bid or state.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "target_id": {"type": "string"}, "bid": {"type": "number"}, "state": {"type": "string"}}, "required": ["profile_id", "target_id"]}),
+    # Reports
+    Tool(name="request_sp_campaign_report", description="Request SP campaign performance report. Date: YYYYMMDD.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "report_date": {"type": "string"}, "metrics": {"type": "string"}}, "required": ["profile_id", "report_date"]}),
+    Tool(name="request_sp_keyword_report", description="Request SP keyword performance report. Date: YYYYMMDD.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "report_date": {"type": "string"}, "metrics": {"type": "string"}}, "required": ["profile_id", "report_date"]}),
+    Tool(name="request_sp_search_term_report", description="Request SP search term report. Date: YYYYMMDD.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "report_date": {"type": "string"}, "metrics": {"type": "string"}}, "required": ["profile_id", "report_date"]}),
+    Tool(name="request_sp_asin_report", description="Request SP advertised ASIN report. Date: YYYYMMDD.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "report_date": {"type": "string"}, "metrics": {"type": "string"}}, "required": ["profile_id", "report_date"]}),
+    Tool(name="request_sb_campaign_report", description="Request SB campaign report. Date: YYYYMMDD.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "report_date": {"type": "string"}, "metrics": {"type": "string"}}, "required": ["profile_id", "report_date"]}),
+    Tool(name="request_sd_campaign_report", description="Request SD campaign report. Date: YYYYMMDD.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "report_date": {"type": "string"}, "metrics": {"type": "string"}}, "required": ["profile_id", "report_date"]}),
+    Tool(name="get_report_status", description="Check status of a requested report.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "report_id": {"type": "string"}}, "required": ["profile_id", "report_id"]}),
+    Tool(name="download_report", description="Download a completed report by reportId.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "report_id": {"type": "string"}}, "required": ["profile_id", "report_id"]}),
+    # Utilities
+    Tool(name="get_date_ranges", description="Returns today, yesterday, 7 days ago, 30 days ago in YYYYMMDD format.", inputSchema={"type": "object", "properties": {}}),
+    Tool(name="list_budget_rules", description="List budget rules for a campaign.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}}, "required": ["profile_id", "campaign_id"]}),
+    Tool(name="create_budget_rule", description="Create a budget rule for a campaign.", inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "campaign_id": {"type": "string"}, "rule_name": {"type": "string"}, "budget_increase_by": {"type": "number"}}, "required": ["profile_id", "campaign_id", "rule_name", "budget_increase_by"]}),
+    Tool(name="health_check", description="Check if server and Amazon Ads API are working.", inputSchema={"type": "object", "properties": {}}),
+]
+
+
+# ── Tool handlers ─────────────────────────────────────────────────────────────
+
+def handle_tool(name: str, args: dict) -> str:
+    p = args.get("profile_id")
+
+    if name == "health_check":
+        try:
+            token = get_access_token()
+            return json.dumps({"status": "healthy", "token_prefix": token[:20] + "..."})
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)})
+
+    if name == "get_date_ranges":
+        today = datetime.utcnow()
+        return json.dumps({"today": today.strftime("%Y%m%d"), "yesterday": (today - timedelta(days=1)).strftime("%Y%m%d"), "7_days_ago": (today - timedelta(days=7)).strftime("%Y%m%d"), "30_days_ago": (today - timedelta(days=30)).strftime("%Y%m%d")})
+
+    if name == "list_profiles":
+        return ok(requests.get(f"{base()}/v2/profiles", headers=hdrs()))
+    if name == "get_profile":
+        return ok(requests.get(f"{base()}/v2/profiles/{args['profile_id']}", headers=hdrs()))
+    if name == "update_profile":
+        return ok(requests.put(f"{base()}/v2/profiles", headers=hdrs(), json=[{"profileId": int(p), "dailyBudget": args["daily_budget"]}]))
+
+    if name == "list_portfolios":
+        return ok(requests.get(f"{base()}/v1/portfolios", headers=hdrs(p)))
+    if name == "create_portfolio":
+        body = {"name": args["name"], "budget": {"amount": args["budget_amount"], "currencyCode": args["budget_currency"], "policy": args.get("budget_policy", "dateRange")}}
+        return ok(requests.post(f"{base()}/v1/portfolios", headers=hdrs(p), json=[body]))
+
+    if name == "list_sp_campaigns":
+        return ok(requests.get(f"{base()}/v2/sp/campaigns", headers=hdrs(p), params={"stateFilter": args.get("state_filter", "enabled,paused,archived")}))
+    if name == "get_sp_campaign":
+        return ok(requests.get(f"{base()}/v2/sp/campaigns/{args['campaign_id']}", headers=hdrs(p)))
+    if name == "create_sp_campaign":
+        body = {"name": args["name"], "campaignType": "sponsoredProducts", "targetingType": args["targeting_type"], "state": "enabled", "dailyBudget": args["daily_budget"], "startDate": args["start_date"]}
+        if args.get("end_date"): body["endDate"] = args["end_date"]
+        if args.get("portfolio_id"): body["portfolioId"] = int(args["portfolio_id"])
+        return ok(requests.post(f"{base()}/v2/sp/campaigns", headers=hdrs(p), json=[body]))
+    if name == "update_sp_campaign":
+        body = {"campaignId": int(args["campaign_id"])}
+        if args.get("name"): body["name"] = args["name"]
+        if args.get("state"): body["state"] = args["state"]
+        if args.get("daily_budget"): body["dailyBudget"] = args["daily_budget"]
+        return ok(requests.put(f"{base()}/v2/sp/campaigns", headers=hdrs(p), json=[body]))
+    if name == "delete_sp_campaign":
+        return ok(requests.delete(f"{base()}/v2/sp/campaigns/{args['campaign_id']}", headers=hdrs(p)))
+
+    if name == "list_sp_ad_groups":
+        params = {"stateFilter": args.get("state_filter", "enabled,paused")}
+        if args.get("campaign_id"): params["campaignIdFilter"] = args["campaign_id"]
+        return ok(requests.get(f"{base()}/v2/sp/adGroups", headers=hdrs(p), params=params))
+    if name == "create_sp_ad_group":
+        return ok(requests.post(f"{base()}/v2/sp/adGroups", headers=hdrs(p), json=[{"campaignId": int(args["campaign_id"]), "name": args["name"], "defaultBid": args["default_bid"], "state": "enabled"}]))
+    if name == "update_sp_ad_group":
+        body = {"adGroupId": int(args["ad_group_id"])}
+        if args.get("name"): body["name"] = args["name"]
+        if args.get("default_bid"): body["defaultBid"] = args["default_bid"]
+        if args.get("state"): body["state"] = args["state"]
+        return ok(requests.put(f"{base()}/v2/sp/adGroups", headers=hdrs(p), json=[body]))
+    if name == "delete_sp_ad_group":
+        return ok(requests.delete(f"{base()}/v2/sp/adGroups/{args['ad_group_id']}", headers=hdrs(p)))
+
+    if name == "list_sp_keywords":
+        params = {"stateFilter": args.get("state_filter", "enabled,paused")}
+        if args.get("ad_group_id"): params["adGroupIdFilter"] = args["ad_group_id"]
+        if args.get("campaign_id"): params["campaignIdFilter"] = args["campaign_id"]
+        return ok(requests.get(f"{base()}/v2/sp/keywords", headers=hdrs(p), params=params))
+    if name == "create_sp_keywords":
+        kws = [k.strip() for k in args["keywords"].split(",")]
+        body = [{"adGroupId": int(args["ad_group_id"]), "campaignId": int(args["campaign_id"]), "keywordText": kw, "matchType": args.get("match_type", "exact"), "bid": args.get("bid", 0.5), "state": "enabled"} for kw in kws]
+        return ok(requests.post(f"{base()}/v2/sp/keywords", headers=hdrs(p), json=body))
+    if name == "update_sp_keyword":
+        body = {"keywordId": int(args["keyword_id"])}
+        if args.get("bid"): body["bid"] = args["bid"]
+        if args.get("state"): body["state"] = args["state"]
+        return ok(requests.put(f"{base()}/v2/sp/keywords", headers=hdrs(p), json=[body]))
+    if name == "delete_sp_keyword":
+        return ok(requests.delete(f"{base()}/v2/sp/keywords/{args['keyword_id']}", headers=hdrs(p)))
+
+    if name == "list_sp_negative_keywords":
+        params = {}
+        if args.get("ad_group_id"): params["adGroupIdFilter"] = args["ad_group_id"]
+        if args.get("campaign_id"): params["campaignIdFilter"] = args["campaign_id"]
+        return ok(requests.get(f"{base()}/v2/sp/negativeKeywords", headers=hdrs(p), params=params))
+    if name == "create_sp_negative_keywords":
+        kws = [k.strip() for k in args["keywords"].split(",")]
+        body = [{"adGroupId": int(args["ad_group_id"]), "campaignId": int(args["campaign_id"]), "keywordText": kw, "matchType": args.get("match_type", "negativeExact"), "state": "enabled"} for kw in kws]
+        return ok(requests.post(f"{base()}/v2/sp/negativeKeywords", headers=hdrs(p), json=body))
+    if name == "delete_sp_negative_keyword":
+        return ok(requests.delete(f"{base()}/v2/sp/negativeKeywords/{args['keyword_id']}", headers=hdrs(p)))
+    if name == "list_sp_campaign_negative_keywords":
+        params = {}
+        if args.get("campaign_id"): params["campaignIdFilter"] = args["campaign_id"]
+        return ok(requests.get(f"{base()}/v2/sp/campaignNegativeKeywords", headers=hdrs(p), params=params))
+    if name == "create_sp_campaign_negative_keyword":
+        return ok(requests.post(f"{base()}/v2/sp/campaignNegativeKeywords", headers=hdrs(p), json=[{"campaignId": int(args["campaign_id"]), "keywordText": args["keyword"], "matchType": args.get("match_type", "negativeExact"), "state": "enabled"}]))
+
+    if name == "list_sp_product_ads":
+        params = {"stateFilter": args.get("state_filter", "enabled,paused")}
+        if args.get("ad_group_id"): params["adGroupIdFilter"] = args["ad_group_id"]
+        if args.get("campaign_id"): params["campaignIdFilter"] = args["campaign_id"]
+        return ok(requests.get(f"{base()}/v2/sp/productAds", headers=hdrs(p), params=params))
+    if name == "create_sp_product_ad":
+        body = {"campaignId": int(args["campaign_id"]), "adGroupId": int(args["ad_group_id"]), "state": "enabled"}
+        if args.get("sku"): body["sku"] = args["sku"]
+        if args.get("asin"): body["asin"] = args["asin"]
+        return ok(requests.post(f"{base()}/v2/sp/productAds", headers=hdrs(p), json=[body]))
+    if name == "update_sp_product_ad":
+        return ok(requests.put(f"{base()}/v2/sp/productAds", headers=hdrs(p), json=[{"adId": int(args["ad_id"]), "state": args["state"]}]))
+    if name == "delete_sp_product_ad":
+        return ok(requests.delete(f"{base()}/v2/sp/productAds/{args['ad_id']}", headers=hdrs(p)))
+
+    if name == "list_sp_targets":
+        params = {"stateFilter": args.get("state_filter", "enabled,paused")}
+        if args.get("ad_group_id"): params["adGroupIdFilter"] = args["ad_group_id"]
+        if args.get("campaign_id"): params["campaignIdFilter"] = args["campaign_id"]
+        return ok(requests.get(f"{base()}/v2/sp/targets", headers=hdrs(p), params=params))
+    if name == "create_sp_asin_target":
+        body = [{"campaignId": int(args["campaign_id"]), "adGroupId": int(args["ad_group_id"]), "state": "enabled", "expression": [{"type": "asinSameAs", "value": args["asin"]}], "expressionType": "manual", "bid": args.get("bid", 0.5)}]
+        return ok(requests.post(f"{base()}/v2/sp/targets", headers=hdrs(p), json=body))
+    if name == "update_sp_target":
+        body = {"targetId": int(args["target_id"])}
+        if args.get("bid"): body["bid"] = args["bid"]
+        if args.get("state"): body["state"] = args["state"]
+        return ok(requests.put(f"{base()}/v2/sp/targets", headers=hdrs(p), json=[body]))
+    if name == "delete_sp_target":
+        return ok(requests.delete(f"{base()}/v2/sp/targets/{args['target_id']}", headers=hdrs(p)))
+
+    if name == "get_sp_bid_recommendations":
+        kws = [{"keyword": k.strip()} for k in args["keywords"].split(",")]
+        return ok(requests.post(f"{base()}/v2/sp/keywords/bidRecommendations", headers=hdrs(p), json={"adGroupId": int(args["ad_group_id"]), "keywords": kws}))
+    if name == "get_suggested_keywords_for_asin":
+        params = {"maxNumSuggestions": args.get("max_num_suggestions", 100), "adStateFilter": "enabled"}
+        return ok(requests.get(f"{base()}/v2/sp/asins/{args['asin']}/suggested/keywords", headers=hdrs(p), params=params))
+    if name == "get_suggested_keywords_bulk":
+        asin_list = [{"asin": a.strip()} for a in args["asins"].split(",")]
+        return ok(requests.post(f"{base()}/v2/sp/asins/suggested/keywords", headers=hdrs(p), json={"asins": asin_list, "maxNumSuggestions": args.get("max_num_suggestions", 100)}))
+    if name == "get_targeting_recommendations":
+        return ok(requests.post(f"{base()}/v2/sp/targets/productRecommendations", headers=hdrs(p), json={"asins": [a.strip() for a in args["asins"].split(",")]}))
+
+    if name == "list_sb_campaigns":
+        return ok(requests.get(f"{base()}/v4/sb/campaigns", headers=hdrs(p), params={"stateFilter": args.get("state_filter", "enabled,paused")}))
+    if name == "get_sb_campaign":
+        return ok(requests.get(f"{base()}/v4/sb/campaigns/{args['campaign_id']}", headers=hdrs(p)))
+    if name == "update_sb_campaign":
+        body = {"campaignId": args["campaign_id"]}
+        if args.get("budget"): body["budget"] = {"budget": args["budget"]}
+        if args.get("state"): body["state"] = args["state"]
+        if args.get("name"): body["name"] = args["name"]
+        return ok(requests.put(f"{base()}/v4/sb/campaigns", headers=hdrs(p), json={"campaigns": [body]}))
+    if name == "list_sb_ad_groups":
+        params = {}
+        if args.get("campaign_id"): params["campaignIdFilter"] = args["campaign_id"]
+        return ok(requests.get(f"{base()}/v4/sb/adGroups", headers=hdrs(p), params=params))
+    if name == "list_sb_keywords":
+        params = {}
+        if args.get("campaign_id"): params["campaignIdFilter"] = args["campaign_id"]
+        if args.get("ad_group_id"): params["adGroupIdFilter"] = args["ad_group_id"]
+        return ok(requests.get(f"{base()}/v4/sb/keywords", headers=hdrs(p), params=params))
+    if name == "update_sb_keyword":
+        body = {"keywordId": args["keyword_id"]}
+        if args.get("bid"): body["bid"] = args["bid"]
+        if args.get("state"): body["state"] = args["state"]
+        return ok(requests.put(f"{base()}/v4/sb/keywords", headers=hdrs(p), json={"keywords": [body]}))
+    if name == "list_sb_negative_keywords":
+        params = {}
+        if args.get("campaign_id"): params["campaignIdFilter"] = args["campaign_id"]
+        return ok(requests.get(f"{base()}/v4/sb/negativeKeywords", headers=hdrs(p), params=params))
+
+    if name == "list_sd_campaigns":
+        return ok(requests.get(f"{base()}/sd/campaigns", headers=hdrs(p), params={"stateFilter": args.get("state_filter", "enabled,paused")}))
+    if name == "get_sd_campaign":
+        return ok(requests.get(f"{base()}/sd/campaigns/{args['campaign_id']}", headers=hdrs(p)))
+    if name == "update_sd_campaign":
+        body = {"campaignId": int(args["campaign_id"])}
+        if args.get("budget"): body["budget"] = args["budget"]
+        if args.get("state"): body["state"] = args["state"]
+        return ok(requests.put(f"{base()}/sd/campaigns", headers=hdrs(p), json=[body]))
+    if name == "list_sd_ad_groups":
+        params = {}
+        if args.get("campaign_id"): params["campaignIdFilter"] = args["campaign_id"]
+        return ok(requests.get(f"{base()}/sd/adGroups", headers=hdrs(p), params=params))
+    if name == "list_sd_targets":
+        params = {}
+        if args.get("ad_group_id"): params["adGroupIdFilter"] = args["ad_group_id"]
+        return ok(requests.get(f"{base()}/sd/targets", headers=hdrs(p), params=params))
+    if name == "update_sd_target":
+        body = {"targetId": int(args["target_id"])}
+        if args.get("bid"): body["bid"] = args["bid"]
+        if args.get("state"): body["state"] = args["state"]
+        return ok(requests.put(f"{base()}/sd/targets", headers=hdrs(p), json=[body]))
+
+    if name == "request_sp_campaign_report":
+        return ok(requests.post(f"{base()}/v2/sp/campaigns/report", headers=hdrs(p), json={"reportDate": args["report_date"], "metrics": args.get("metrics", "impressions,clicks,spend,sales7d,acos7d,roas7d,orders7d")}))
+    if name == "request_sp_keyword_report":
+        return ok(requests.post(f"{base()}/v2/sp/keywords/report", headers=hdrs(p), json={"reportDate": args["report_date"], "metrics": args.get("metrics", "impressions,clicks,spend,sales7d,acos7d,roas7d,orders7d,keywordText,matchType")}))
+    if name == "request_sp_search_term_report":
+        return ok(requests.post(f"{base()}/v2/sp/keywords/report", headers=hdrs(p), json={"reportDate": args["report_date"], "metrics": args.get("metrics", "impressions,clicks,spend,sales7d,orders7d,keywordText,query,matchType"), "segment": "query"}))
+    if name == "request_sp_asin_report":
+        return ok(requests.post(f"{base()}/v2/sp/productAds/report", headers=hdrs(p), json={"reportDate": args["report_date"], "metrics": args.get("metrics", "impressions,clicks,spend,sales7d,orders7d,asin,advertisedAsin")}))
+    if name == "request_sb_campaign_report":
+        return ok(requests.post(f"{base()}/v4/sb/campaigns/report", headers=hdrs(p), json={"reportDate": args["report_date"], "metrics": args.get("metrics", "impressions,clicks,spend,sales14d,orders14d")}))
+    if name == "request_sd_campaign_report":
+        return ok(requests.post(f"{base()}/sd/campaigns/report", headers=hdrs(p), json={"reportDate": args["report_date"], "metrics": args.get("metrics", "impressions,clicks,spend,sales14d,orders14d")}))
+    if name == "get_report_status":
+        return ok(requests.get(f"{base()}/v2/reports/{args['report_id']}", headers=hdrs(p)))
+    if name == "download_report":
+        r = requests.get(f"{base()}/v2/reports/{args['report_id']}", headers=hdrs(p))
+        data = r.json()
+        if data.get("status") != "SUCCESS":
+            return json.dumps({"status": data.get("status"), "message": "Report not ready yet."})
+        location = data.get("location")
+        if not location:
+            return json.dumps({"error": "No download location."})
+        rr = requests.get(location)
+        try:
+            return json.dumps(rr.json(), indent=2)
+        except Exception:
+            return rr.text
+
+    if name == "list_budget_rules":
+        return ok(requests.get(f"{base()}/v1/campaigns/{args['campaign_id']}/budgetRules", headers=hdrs(p)))
+    if name == "create_budget_rule":
+        body = {"ruleType": "PERFORMANCE", "name": args["rule_name"], "budgetIncreasedBy": {"type": "PERCENT", "value": args["budget_increase_by"]}, "conditions": [{"predicate": args.get("predicate_type", "DAYSOFWEEK"), "value": args.get("predicate_value", "MONDAY,TUESDAY,WEDNESDAY,THURSDAY,FRIDAY")}]}
+        return ok(requests.post(f"{base()}/v1/campaigns/{args['campaign_id']}/budgetRules", headers=hdrs(p), json=body))
+
+    return json.dumps({"error": f"Unknown tool: {name}"})
+
+
+# ── MCP Server ────────────────────────────────────────────────────────────────
+
+server = Server("che-mate-ads-mcp")
+
+
+@server.list_tools()
+async def list_tools():
+    return TOOLS
+
+
+@server.call_tool()
+async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    result = handle_tool(name, arguments)
+    return [TextContent(type="text", text=result)]
+
+
+# ── Starlette app ─────────────────────────────────────────────────────────────
+
+sse = SseServerTransport("/messages/")
+
+
+async def handle_sse(request: Request):
+    async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
+        await server.run(streams[0], streams[1], server.create_initialization_options())
+
+
+async def handle_messages(request: Request):
+    await sse.handle_post_message(request.scope, request.receive, request._send)
+
+
+app = Starlette(
+    routes=[
+        Route("/sse", endpoint=handle_sse),
+        Mount("/messages/", app=sse.handle_post_message),
+    ]
+)
 
 if __name__ == "__main__":
-    import asyncio
-    port = int(os.environ.get("PORT", 8000))
-    asyncio.run(mcp.run_http_async(host="0.0.0.0", port=port, transport="streamable-http"))
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
