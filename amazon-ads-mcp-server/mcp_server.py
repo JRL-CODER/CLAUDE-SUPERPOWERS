@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from fastmcp import FastMCP
 
-mcp = FastMCP(host="0.0.0.0", stateless_http=True)
+mcp = FastMCP()
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -703,6 +703,6 @@ def health_check() -> str:
 
 
 if __name__ == "__main__":
-    import uvicorn
+    import asyncio
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(mcp.http_app(), host="0.0.0.0", port=port)
+    asyncio.run(mcp.run_http_async(host="0.0.0.0", port=port, transport="streamable-http"))
